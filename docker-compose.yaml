@@ -1,0 +1,15 @@
+services:
+  phonikud-tts:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: phonikud-tts
+    ports:
+      - "8880:8880"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8880/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
