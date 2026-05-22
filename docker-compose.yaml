@@ -9,5 +9,5 @@ services:
     mem_reservation: 2g
     pull_policy: always
     environment:
-      - API_USERNAME=maia
-      - API_PASSWORD=DRPIUbSyD0BLrxb/RQ5DjTjO
+      - API_USERNAME=${API_USERNAME}
+      - API_PASSWORD=${API_PASSWORD}
