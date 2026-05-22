@@ -7,6 +7,9 @@ import io
 import time
 import logging
 from pathlib import Path
+from functools import wraps
+import os
+import secrets
 
 import soundfile as sf
 from flask import Flask, request, jsonify, send_file
@@ -18,6 +21,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("phonikud-tts")
 
 app = Flask(__name__)
+
+# --- Auth ---
+API_USERNAME = os.environ.get("API_USERNAME", "")
+API_PASSWORD = os.environ.get("API_PASSWORD", "")
+REQUIRE_AUTH = bool(API_USERNAME and API_PASSWORD)
+
+def check_auth(username, password):
+    return secrets.compare_digest(username, API_USERNAME) and secrets.compare_digest(password, API_PASSWORD)
+
+def auth_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not REQUIRE_AUTH:
+            return f(*args, **kwargs)
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return jsonify({"error": "Unauthorized"}), 401, {"WWW-Authenticate": 'Basic realm="TTS"'}
+        return f(*args, **kwargs)
+    return decorated
 
 MODELS_DIR = Path("/app/models")
 
@@ -73,10 +95,12 @@ def health():
         "status": "ok",
         "g2p": "renikud",
         "voices": list(VOICE_MAP.keys()),
+        "auth_enabled": REQUIRE_AUTH,
     })
 
 
 @app.route("/v1/audio/speech", methods=["POST"])
+@auth_required
 def speech():
     data = request.get_json(silent=True) or {}
     text = data.get("input", "").strip()
@@ -134,6 +158,7 @@ def speech():
 
 
 @app.route("/v1/voices", methods=["GET"])
+@auth_required
 def voices():
     return jsonify({
         "voices": [
@@ -147,6 +172,10 @@ def voices():
 
 if __name__ == "__main__":
     log.info("Starting phonikud-tts server (Renikud edition) on port 8880")
+    if REQUIRE_AUTH:
+        log.info("Auth enabled - protected endpoints require credentials")
+    else:
+        log.warning("No API_USERNAME/API_PASSWORD set - endpoints are OPEN")
     get_renikud()
     get_piper("shaul")
     log.info("Models loaded. Ready.")
