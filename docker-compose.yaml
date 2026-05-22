@@ -7,3 +7,4 @@ services:
     restart: unless-stopped
     mem_limit: 4g
     mem_reservation: 2g
+    pull_policy: always
