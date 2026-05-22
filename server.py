@@ -1,7 +1,7 @@
 """
 Phonikud-TTS HTTP API Server (Renikud edition)
 OpenAI-compatible /v1/audio/speech endpoint for Hebrew TTS
-Uses Renikud G2P (higher accuracy, ~20MB) + Piper ONNX voices
+Voices: shaul (Piper male), michael (Piper male), maia (StyleTTS2 female)
 """
 import io
 import time
@@ -12,6 +12,7 @@ import soundfile as sf
 from flask import Flask, request, jsonify, send_file
 from renikud_onnx import G2P
 from piper_onnx import Piper
+from style_onnx import StyleTTS2
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("phonikud-tts")
@@ -21,80 +22,95 @@ app = Flask(__name__)
 MODELS_DIR = Path("/app/models")
 
 _renikud = None
-_piper_shaul = None
-_piper_michael = None
+_piper = {}
+_styletss2 = None
+_female_style = None
 
 VOICE_MAP = {
-    "shaul": "shaul.onnx",
-    "michael": "michael.onnx",
+    "shaul": {"engine": "piper", "model": "shaul.onnx"},
+    "michael": {"engine": "piper", "model": "michael.onnx"},
+    "maia": {"engine": "styletss2", "style": "636_female"},
+    "maia-alt": {"engine": "styletss2", "style": "female1"},
 }
 
 
 def get_renikud():
     global _renikud
     if _renikud is None:
-        path = MODELS_DIR / "renikud.onnx"
-        log.info(f"Loading Renikud G2P model from {path}")
-        _renikud = G2P(str(path))
+        _renikud = G2P(str(MODELS_DIR / "renikud.onnx"))
+        log.info("Renikud G2P loaded")
     return _renikud
 
 
-def get_piper(voice: str = "shaul"):
-    global _piper_shaul, _piper_michael
-    voice = voice.lower()
-    if voice not in VOICE_MAP:
-        voice = "shaul"
-    if voice == "shaul":
-        if _piper_shaul is None:
-            _piper_shaul = Piper(
-                str(MODELS_DIR / "shaul.onnx"),
-                str(MODELS_DIR / "model.config.json"),
-            )
-        return _piper_shaul
-    else:
-        if _piper_michael is None:
-            _piper_michael = Piper(
-                str(MODELS_DIR / "michael.onnx"),
-                str(MODELS_DIR / "model.config.json"),
-            )
-        return _piper_michael
+def get_piper(voice: str):
+    global _piper
+    model_file = VOICE_MAP[voice]["model"]
+    if model_file not in _piper:
+        _piper[model_file] = Piper(
+            str(MODELS_DIR / model_file),
+            str(MODELS_DIR / "model.config.json"),
+        )
+        log.info(f"Piper voice '{voice}' loaded")
+    return _piper[model_file]
+
+
+def get_styletss2(style_name: str):
+    global _styletss2, _female_style
+    style_file = f"{style_name}_style.npy"
+    if _styletss2 is None or _female_style != style_name:
+        _styletss2 = StyleTTS2(
+            str(MODELS_DIR / "libritts_hebrew.onnx"),
+            str(MODELS_DIR / style_file),
+        )
+        _female_style = style_name
+        log.info(f"StyleTTS2 voice '{style_name}' loaded")
+    return _styletss2
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "g2p": "renikud", "voices": list(VOICE_MAP.keys())})
+    return jsonify({
+        "status": "ok",
+        "g2p": "renikud",
+        "voices": list(VOICE_MAP.keys()),
+    })
 
 
 @app.route("/v1/audio/speech", methods=["POST"])
 def speech():
     data = request.get_json(silent=True) or {}
     text = data.get("input", "").strip()
-    voice = data.get("voice", "shaul")
+    voice = data.get("voice", "maia")
     response_format = data.get("response_format", "wav")
     speed = float(data.get("speed", 1.0))
 
     if not text:
         return jsonify({"error": "No text provided"}), 400
     if voice not in VOICE_MAP:
-        return jsonify({"error": f"Unknown voice '{voice}'. Available: {list(VOICE_MAP.keys())}"}), 400
+        return jsonify({
+            "error": f"Unknown voice '{voice}'. Available: {list(VOICE_MAP.keys())}"
+        }), 400
 
-    log.info(f"TTS: voice={voice} text_len={len(text)} fmt={response_format}")
+    voice_cfg = VOICE_MAP[voice]
+    log.info(f"TTS: voice={voice} ({voice_cfg['engine']}) text_len={len(text)}")
 
     try:
         start = time.time()
 
-        # Renikud: one-step text → phonemes (no diacritics step needed!)
         renikud = get_renikud()
         phonemes = renikud.phonemize(text)
 
-        # Piper: phonemes → audio
-        piper = get_piper(voice)
-        if speed != 1.0:
-            samples, sample_rate = piper.create(
-                phonemes, is_phonemes=True, length_scale=1.0 / speed
-            )
+        if voice_cfg["engine"] == "piper":
+            piper = get_piper(voice)
+            if speed != 1.0:
+                samples, sample_rate = piper.create(
+                    phonemes, is_phonemes=True, length_scale=1.0 / speed
+                )
+            else:
+                samples, sample_rate = piper.create(phonemes, is_phonemes=True)
         else:
-            samples, sample_rate = piper.create(phonemes, is_phonemes=True)
+            tts = get_styletss2(voice_cfg["style"])
+            samples, sample_rate = tts.create(phonemes, speed=speed)
 
         elapsed = time.time() - start
         duration = len(samples) / sample_rate
@@ -121,6 +137,8 @@ def speech():
 def voices():
     return jsonify({
         "voices": [
+            {"id": "maia", "name": "mAIa", "language": "he", "gender": "female"},
+            {"id": "maia-alt", "name": "mAIa (alt)", "language": "he", "gender": "female"},
             {"id": "shaul", "name": "Shaul", "language": "he", "gender": "male"},
             {"id": "michael", "name": "Michael", "language": "he", "gender": "male"},
         ]
