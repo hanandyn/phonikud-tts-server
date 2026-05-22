@@ -12,7 +12,7 @@ COPY server.py ./
 
 RUN mkdir -p /app/models
 
-RUN uv sync --frozen
+RUN uv sync --frozen && uv pip install flask
 
 RUN wget -q -O /app/models/phonikud-1.0.int8.onnx \
         "https://huggingface.co/thewh1teagle/phonikud-onnx/resolve/main/phonikud-1.0.int8.onnx" && \
